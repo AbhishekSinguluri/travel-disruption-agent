@@ -1,0 +1,37 @@
+{
+    "air_india_confirmation": {
+        "id": "msg-1",
+        "threadId": "thread-1",
+        "subject": "Booking Confirmation: Air India AI123",
+        "snippet": "Your Air India AI123 flight booking from Hyderabad to Delhi on October 4 is confirmed. Departure: 09:20, Arrival: 11:35.",
+        "body": "Your Air India AI123 flight booking from Hyderabad to Delhi on October 4 is confirmed. Departure: 09:20, Arrival: 11:35. Booking reference: ABC123. Baggage: 15kg."
+    },
+    "air_india_delay": {
+        "id": "msg-2",
+        "threadId": "thread-1",
+        "subject": "Flight Delay: Air India AI123",
+        "snippet": "Your Air India AI123 flight originally scheduled for 09:20 has been delayed. The new departure time is 11:10.",
+        "body": "Your Air India AI123 flight originally scheduled for 09:20 has been delayed. The new departure time is 11:10."
+    },
+    "air_india_cancellation": {
+        "id": "msg-3",
+        "threadId": "thread-1",
+        "subject": "Flight Cancellation: Air India AI123",
+        "snippet": "Your Air India AI123 flight has been cancelled.",
+        "body": "Your Air India AI123 flight has been cancelled."
+    },
+    "air_india_promotional": {
+        "id": "msg-4",
+        "threadId": "thread-2",
+        "subject": "Air India Promotional Offer",
+        "snippet": "Fly with Air India and get 20% off on your next booking.",
+        "body": "Fly with Air India and get 20% off on your next booking."
+    },
+    "wrong_air_india_flight": {
+        "id": "msg-5",
+        "threadId": "thread-3",
+        "subject": "Booking Confirmation: Air India AI999",
+        "snippet": "Your Air India AI999 flight from Delhi to Mumbai is confirmed.",
+        "body": "Your Air India AI999 flight from Delhi to Mumbai is confirmed."
+    }
+}

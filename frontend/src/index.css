@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #0F172A;
+  --color-accent: #0284c7;
+  --color-coral: #f43f5e;
+  --color-sky-light: #e0f2fe;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: #f6f9fc;
+  color: #0F172A;
+}
+
+.atmospheric-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: 
+    radial-gradient(circle at 10% 20%, rgba(224, 242, 254, 0.8) 0%, transparent 40%),
+    radial-gradient(circle at 90% 80%, rgba(248, 250, 252, 0.9) 0%, transparent 50%),
+    radial-gradient(circle at 50% 50%, rgba(224, 242, 254, 0.4) 0%, transparent 70%);
+  filter: blur(80px);
+  animation: breathe 25s ease-in-out infinite alternate;
+}
+
+@keyframes breathe {
+  0% { transform: scale(1) translate(0px, 0px); }
+  50% { transform: scale(1.05) translate(20px, -20px); }
+  100% { transform: scale(1) translate(-20px, 20px); }
+}
+
+.polaroid {
+  background: white;
+  padding: 8px 8px 24px 8px;
+  border-radius: 4px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+  transition: transform 0.3s ease;
+}
+
+.polaroid-float-1 { animation: float1 7s ease-in-out infinite; transform: rotate(-3deg); }
+.polaroid-float-2 { animation: float2 9s ease-in-out infinite; transform: rotate(2deg); }
+
+@keyframes float1 {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50% { transform: translateY(-3px) rotate(-2deg); }
+}
+
+@keyframes float2 {
+  0%, 100% { transform: translateY(0) rotate(2deg); }
+  50% { transform: translateY(-2px) rotate(3deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .polaroid-float-1, .polaroid-float-2, .atmospheric-bg {
+    animation: none;
+  }
+}
+
+.handwritten {
+  font-family: 'Caveat', cursive;
+  color: #0284c7;
+  font-size: 1.8rem;
+}
+
+.editorial-title {
+  font-family: 'Playfair Display', serif;
+  letter-spacing: -0.02em;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
+  border-radius: 24px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fadeIn 0.4s ease-out forwards;
+}
