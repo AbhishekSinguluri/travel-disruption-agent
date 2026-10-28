@@ -7,7 +7,19 @@ from app.workflows.monitoring_graph import mon_graph
 from app.db.repositories import get_trip_repository
 import math
 
+from app.services.weather import check_stop_realtime_weather, get_weather_provider
+from app.services.mock_db import MOCK_DB
+
 router = APIRouter()
+
+def _get_trip_anywhere(trip_id: str):
+    repo = get_trip_repository()
+    t = repo.get_trip(trip_id, "demo-user")
+    if not t:
+        t = MOCK_DB.get("trips", {}).get(trip_id)
+    if not t and trip_id in ["demo", "default"]:
+        t = MOCK_DB.get("trips", {}).get("trip-1")
+    return t
 
 active_connections = []
 
@@ -29,15 +41,23 @@ async def broadcast_event(event_type: str, payload: dict):
 class SimReq(BaseModel):
     event: str
     value: int = 0
+    stop_id: str = None
 
 @router.post("/{trip_id}/simulate")
 async def simulate_event(trip_id: str, req: SimReq):
     if req.event == "start":
         await broadcast_event("trip_started", {})
     elif req.event == "delay":
-        await broadcast_event("delay_detected", {"minutes": req.value, "message": f"You're about {req.value} minutes behind schedule."})
+        await broadcast_event("delay_detected", {
+            "stop_id": req.stop_id,
+            "minutes": req.value,
+            "message": f"You're about {req.value} minutes behind schedule."
+        })
     elif req.event == "weather":
-        await broadcast_event("weather_warning", {"message": "Heavy rain is expected around your 14:00 outdoor activity."})
+        await broadcast_event("weather_warning", {
+            "stop_id": req.stop_id,
+            "message": "🌧 Live OpenWeather Alert: Rain detected around your upcoming outdoor activity. Disruption popup activated."
+        })
     return {"status": "ok"}
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -50,30 +70,121 @@ def haversine(lat1, lon1, lat2, lon2):
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
     return R * c
 
+@router.get("/{trip_id}/weather")
+async def get_trip_weather(trip_id: str):
+    """
+    Checks real-time OpenWeather for all uncompleted stops in the itinerary.
+    """
+    trip = _get_trip_anywhere(trip_id)
+    if not trip:
+        return {"status": "error", "message": "Trip not found", "stops_weather": []}
+
+    dest = trip.get("destination") or trip.get("name") or ""
+    results = []
+    for d in trip.get("days", []):
+        for s in d.get("stops", []):
+            w = check_stop_realtime_weather(s, destination=dest)
+            results.append(w)
+    return {"status": "ok", "stops_weather": results}
+
+@router.post("/{trip_id}/check-weather")
+async def check_trip_weather(trip_id: str, payload: dict = None):
+    """
+    Checks real-time weather and broadcasts warning if rain is detected at any upcoming stop.
+    """
+    payload = payload or {}
+    force_rain = payload.get("force_rain", False)
+    target_stop_id = payload.get("stop_id")
+
+    trip = _get_trip_anywhere(trip_id)
+    if not trip:
+        return {"status": "error", "message": "Trip not found"}
+
+    dest = trip.get("destination") or trip.get("name") or ""
+    rain_stops = []
+    
+    for d in trip.get("days", []):
+        for s in d.get("stops", []):
+            if s.get("status") not in ["COMPLETED", "SKIPPED"] and not s.get("completed"):
+                is_target = (target_stop_id is None) or (s.get("id") == target_stop_id)
+                should_force = force_rain and is_target
+                w = check_stop_realtime_weather(s, destination=dest, force_rain=should_force)
+                if w.get("is_raining"):
+                    rain_stops.append(w)
+                    await broadcast_event("weather_warning", {
+                        "stop_id": s["id"],
+                        "stop_title": s.get("title", "stop"),
+                        "weather": w,
+                        "message": f"🌧 Live OpenWeather Alert: Rain detected at {s.get('title')} ({w.get('description', 'Rain')}, {w.get('temperature', 25)}°C). Disruption popup activated."
+                    })
+                    break # Alert for the first rainy upcoming stop
+        if rain_stops:
+            break
+
+    return {"status": "ok", "rain_detected": len(rain_stops) > 0, "rain_stops": rain_stops}
+
 @router.post("/{trip_id}/location")
 async def update_location(trip_id: str, loc: LocationUpdate):
     repo = get_trip_repository()
-    # Try getting the trip
-    trip = repo.get_trip(trip_id, "demo-user") # Hack for MVP without token
+    trip = _get_trip_anywhere(trip_id)
     action_required = None
     
     if trip:
-        # Check proximity to next stop
-        next_stop = None
+        import datetime
+        now = datetime.datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+
+        # ONLY evaluate the active upcoming stop (first uncompleted stop)
+        active_stop = None
         for d in trip.get("days", []):
             for s in d.get("stops", []):
-                if s.get("status") == "UPCOMING":
-                    next_stop = s
+                if s.get("status") not in ["COMPLETED", "SKIPPED"] and not s.get("completed"):
+                    active_stop = s
                     break
-            if next_stop: break
-            
-        if next_stop and next_stop.get("latitude") and next_stop.get("longitude"):
-            dist = haversine(loc.latitude, loc.longitude, next_stop["latitude"], next_stop["longitude"])
-            if dist < 100: # within 100 meters
-                next_stop["status"] = "ARRIVED"
-                repo.update_trip(trip_id, trip, "demo-user")
-                action_required = "STOP_NEARBY"
-                await broadcast_event("stop_nearby", {"stop_id": next_stop["id"], "message": f"You have arrived at {next_stop['title']}."})
+            if active_stop:
+                break
+
+        if active_stop:
+            s_lat = active_stop.get("latitude")
+            s_lon = active_stop.get("longitude")
+            if s_lat is not None and s_lon is not None:
+                dist = haversine(loc.latitude, loc.longitude, s_lat, s_lon)
+                # 400-meter radius geofence for arrival verification
+                if dist <= 400:
+                    active_stop["status"] = "COMPLETED"
+                    active_stop["completed"] = True
+                    repo.update_trip(trip_id, trip, "demo-user")
+                    action_required = "STOP_NEARBY"
+                    await broadcast_event("stop_nearby", {
+                        "stop_id": active_stop["id"],
+                        "stop_title": active_stop.get("title", "stop"),
+                        "message": f"📍 Geotag Verified: You have arrived at {active_stop.get('title')}! Checked in itinerary."
+                    })
+                else:
+                    # User is in a DIFFERENT place (distance > 400m); evaluate real-time schedule timing
+                    st = active_stop.get("start_time")
+                    if st and ":" in str(st):
+                        try:
+                            cleaned_st = str(st).strip().lower().replace("am", "").replace("pm", "").strip()
+                            parts = cleaned_st.split(":")
+                            st_hour = int(parts[0])
+                            st_min = int(parts[1][:2])
+                            if "pm" in str(st).lower() and st_hour < 12:
+                                st_hour += 12
+                            if "am" in str(st).lower() and st_hour == 12:
+                                st_hour = 0
+                            scheduled_mins = st_hour * 60 + st_min
+                            if current_minutes >= scheduled_mins:
+                                diff = current_minutes - scheduled_mins
+                                delay_val = max(15, diff if diff > 0 else 15)
+                                action_required = "DELAY_DETECTED"
+                                await broadcast_event("delay_detected", {
+                                    "stop_id": active_stop["id"],
+                                    "minutes": delay_val,
+                                    "message": f"⚠️ Real-Time Disruption: You were scheduled at {active_stop.get('title')} at {st}, but your GPS indicates you have not arrived yet ({delay_val} min behind)."
+                                })
+                        except Exception as e:
+                            logger.warning(f"Error parsing stop start_time: {e}")
     
     await broadcast_event("location_updated", loc.model_dump())
     return {"status": "ok", "action": action_required}
@@ -87,17 +198,19 @@ async def activate_booking_monitor(booking: dict):
     
     # Store monitor
     monitor_id = str(uuid.uuid4())
-    user_id = "demo-user"
+    booking_id = booking.get("id") or booking.get("booking_id") or monitor_id
+    user_id = booking.get("user_id") or "demo-user"
     
     # We expect booking to be the summary JSON returned from extract
     monitor_state = {
         "monitor_id": monitor_id,
+        "booking_id": booking_id,
         "user_id": user_id,
         "provider": booking.get("provider"),
         "service_number": booking.get("flight_number") or booking.get("service_number"),
         "booking_reference": booking.get("booking_reference"),
-        "origin": booking.get("departure_location"),
-        "destination": booking.get("arrival_location"),
+        "origin": booking.get("departure_location") or booking.get("origin"),
+        "destination": booking.get("arrival_location") or booking.get("destination"),
         "travel_date": booking.get("departure_time") or booking.get("travel_date"),
         "baseline_booking": booking,
         "status": "ACTIVE",

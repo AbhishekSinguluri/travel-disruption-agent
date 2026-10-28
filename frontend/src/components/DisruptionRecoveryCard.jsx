@@ -11,7 +11,7 @@ export default function DisruptionRecoveryCard() {
     selectCandidate
   } = useTripStore();
 
-  if (!activeDisruption || !impact) return null;
+  if (!activeDisruption) return null;
 
   const handleOkay = () => {
     useTripStore.getState().shiftItinerary(activeDisruption.affected_stop_id, activeDisruption.delay_minutes || 15);
@@ -29,9 +29,18 @@ export default function DisruptionRecoveryCard() {
 
   const handleFindAlternative = () => {
     if (activeDisruption.type === 'WEATHER_DISRUPTION') {
-      submitPreferences({ categories: ['Indoor'], disruption_type: activeDisruption.type });
+      submitPreferences({ 
+        categories: ['Indoor'], 
+        disruption_type: activeDisruption.type,
+        affected_stop_id: activeDisruption.affected_stop_id 
+      });
     } else {
-      submitPreferences({ categories: ['Nearby'], disruption_type: activeDisruption.type });
+      submitPreferences({ 
+        categories: ['Nearby', 'Outdoor', 'Indoor'], 
+        disruption_type: activeDisruption.type,
+        affected_stop_id: activeDisruption.affected_stop_id,
+        delay_minutes: activeDisruption.delay_minutes || 15
+      });
     }
   };
 

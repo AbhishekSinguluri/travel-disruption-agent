@@ -81,7 +81,8 @@ export const useTripStore = create((set, get) => ({
     },
 
     sendCompanionMessage: async (tripId, message) => {
-        const res = await fetch(`http://localhost:8000/api/trips/${tripId}/chat`, {
+        const id = (tripId && tripId !== 'default' && tripId !== 'undefined' && tripId !== 'null') ? tripId : 'general';
+        const res = await fetch(`http://localhost:8000/api/trips/${id}/chat`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ message })
@@ -146,27 +147,37 @@ export const useTripStore = create((set, get) => ({
             console.error("No valid active stop ID provided for disruption.");
             return;
         }
-        const res = await fetch(`http://localhost:8000/api/trips/${trip.id}/simulate-disruption`, {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ type: type, affected_stop_id: stopId, delay_minutes: delay_minutes })
-        });
-        const data = await res.json();
-        
-        let cands = [];
-        if (data.state && data.state.candidate_alternatives) {
-            cands = data.state.candidate_alternatives;
-        } else if (data.impact && data.impact.strategy && data.impact.strategy.candidates) {
-            cands = data.impact.strategy.candidates;
-        } else if (data.candidates) {
-            cands = data.candidates;
-        }
-        
+        // Optimistic immediate activation so UI popup shows instantly in real time
         set({ 
             activeDisruption: { type: type, affected_stop_id: stopId, delay_minutes: delay_minutes, showRecovery: false },
-            impactAnalysis: data.impact || { message: "Disruption" },
-            recoveryCandidates: cands
+            impactAnalysis: { message: `Schedule disruption detected (${delay_minutes} min behind).` },
+            recoveryCandidates: []
         });
+        try {
+            const res = await fetch(`http://localhost:8000/api/trips/${trip.id}/simulate-disruption`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ type: type, affected_stop_id: stopId, delay_minutes: delay_minutes })
+            });
+            const data = await res.json();
+            
+            let cands = [];
+            if (data.state && data.state.candidate_alternatives) {
+                cands = data.state.candidate_alternatives;
+            } else if (data.impact && data.impact.strategy && data.impact.strategy.candidates) {
+                cands = data.impact.strategy.candidates;
+            } else if (data.candidates) {
+                cands = data.candidates;
+            }
+            
+            set({ 
+                activeDisruption: { type: type, affected_stop_id: stopId, delay_minutes: delay_minutes, showRecovery: false },
+                impactAnalysis: data.impact || { message: `Schedule disruption detected (${delay_minutes} min behind)` },
+                recoveryCandidates: cands
+            });
+        } catch (err) {
+            console.warn("Disruption simulation API error:", err);
+        }
     },
     
 
@@ -176,10 +187,14 @@ export const useTripStore = create((set, get) => ({
         const res = await fetch(`http://localhost:8000/api/trips/${trip.id}/recovery/preferences`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(prefs)
+            body: JSON.stringify({
+                ...prefs,
+                destination: trip.destination || trip.name,
+                trip_id: trip.id
+            })
         });
         const data = await res.json();
-        set({ recoveryCandidates: data.candidates });
+        set({ recoveryCandidates: data.candidates || [] });
     },
     
     selectCandidate: async (candidateId) => {

@@ -1,5 +1,6 @@
 import os
-from typing import Protocol, List, Dict
+import re
+from typing import Protocol, List, Dict, Optional
 from app.schemas.places import PlaceCandidate
 import logging
 
@@ -44,25 +45,160 @@ class MockPlacesProvider:
                 source="google_mock"
             )
 
+        q_lower = query.lower().strip()
+        if "old city" in q_lower and ("hyderabad" in city_context.lower() or not city_context):
+            return PlaceCandidate(
+                id="hyd-old-city-center",
+                name="Old City",
+                address="Old City, Hyderabad, Telangana, India",
+                latitude=17.3616,
+                longitude=78.4746,
+                category="Food",
+                source="curated"
+            )
+
+        if "vnr" in q_lower or "vjiet" in q_lower:
+            return PlaceCandidate(
+                id="hyd-vnr-vjiet",
+                name="VNR Vignana Jyothi Institute of Engineering and Technology",
+                address="VNR Vignana Jyothi Institute of Engineering & Technology, Bachupally, Hyderabad, Telangana 500090, India",
+                latitude=17.540601,
+                longitude=78.386412,
+                category="Campus",
+                source="curated_verified"
+            )
+
+        if "makau" in q_lower:
+            return PlaceCandidate(
+                id="hyd-makau-cafe",
+                name="Makau Kitchen and Bar",
+                address="Makau Kitchen and Bar, Rd Number 37, Jubilee Hills, Hyderabad, Telangana 500033, India",
+                latitude=17.437470,
+                longitude=78.399641,
+                category="Food",
+                source="curated_verified"
+            )
+
+        if "gvk" in q_lower and "mall" in q_lower:
+            return PlaceCandidate(
+                id="hyd-gvk-one",
+                name="GVK One Mall",
+                address="GVK One Mall, Banjara Hills Rd Number 1, Hyderabad, Telangana 500034, India",
+                latitude=17.419243,
+                longitude=78.448484,
+                category="Shopping",
+                source="curated_verified"
+            )
+
+        if "inorbit" in q_lower:
+            return PlaceCandidate(
+                id="hyd-inorbit-mall",
+                name="Inorbit Mall Cyberabad",
+                address="Inorbit Mall Cyberabad, Mindspace, Madhapur, Hyderabad, Telangana 500081, India",
+                latitude=17.434440,
+                longitude=78.386640,
+                category="Shopping",
+                source="curated_verified"
+            )
+
+        if "hussain" in q_lower or "necklace road" in q_lower:
+            return PlaceCandidate(
+                id="hyd-hussain-sagar",
+                name="Hussain Sagar Lake",
+                address="Hussain Sagar Lake, Tank Bund, Hyderabad, Telangana 500029, India",
+                latitude=17.423900,
+                longitude=78.473800,
+                category="Activity",
+                source="curated_verified"
+            )
+
+        if "charminar" in q_lower:
+            return PlaceCandidate(
+                id="hyd-charminar",
+                name="Charminar",
+                address="Charminar, Char Kaman, Ghansi Bazaar, Hyderabad, Telangana 500002, India",
+                latitude=17.361560,
+                longitude=78.474670,
+                category="Sightseeing",
+                source="curated_verified"
+            )
+
+        # Tier 1: SerpAPI Google Maps Engine (Authentic Precision for any location in India)
+        serpapi_key = os.getenv("SERPAPI_API_KEY")
+        if serpapi_key:
+            try:
+                from app.agents.builder import get_destination_coords
+                base_lat, base_lng = get_destination_coords(city_context)
+                search_q = f"{query}, {city_context}" if city_context and city_context.lower() not in query.lower() else query
+                s_params = {"engine": "google_maps", "q": search_q, "api_key": serpapi_key}
+                s_resp = requests.get("https://serpapi.com/search", params=s_params, timeout=6)
+                if s_resp.status_code == 200:
+                    s_data = s_resp.json()
+                    place_info = s_data.get("place_results")
+                    if not place_info and s_data.get("local_results"):
+                        place_info = s_data["local_results"][0]
+                    if place_info and place_info.get("gps_coordinates"):
+                        coords = place_info["gps_coordinates"]
+                        plat = float(coords.get("latitude"))
+                        plon = float(coords.get("longitude"))
+                        import math
+                        dist = math.hypot(plat - base_lat, plon - base_lng) * 111.0
+                        if dist <= 80:
+                            return PlaceCandidate(
+                                id=str(place_info.get("place_id", f"serp-{uuid.uuid4().hex[:8]}")),
+                                name=place_info.get("title", query),
+                                address=place_info.get("address", f"{query}, {city_context}"),
+                                latitude=plat,
+                                longitude=plon,
+                                category="Activity",
+                                source="google_maps"
+                            )
+            except Exception as e:
+                logger.warning(f"SerpAPI Google Maps geocoding failed: {e}")
+
+        # Tier 2: Nominatim OpenStreetMap fallback with query variation cleaning
         try:
+            from app.agents.builder import get_destination_coords
+            base_lat, base_lng = get_destination_coords(city_context)
+
+            q_city = city_context
+            if "hyderabad" in city_context.lower() and "pakistan" not in city_context.lower():
+                q_city = "Hyderabad, Telangana, India"
+            elif "alleppey" in city_context.lower() or "alappuzha" in city_context.lower():
+                q_city = "Alleppey, Kerala, India"
+            elif "kerala" in city_context.lower():
+                q_city = f"{city_context}, Kerala, India"
+
             url = "https://nominatim.openstreetmap.org/search"
-            params = {"q": f"{query}, {city_context}", "format": "json", "limit": 3}
-            headers = {"User-Agent": "TravelAgentCapstone/1.0"}
-            resp = requests.get(url, params=params, headers=headers, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data:
-                    place = data[0]
-                    return PlaceCandidate(
-                        id=str(place.get("place_id", place.get("osm_id", "mock-1"))),
-                        name=query,
-                        address=place.get("display_name"),
-                        latitude=float(place.get("lat")),
-                        longitude=float(place.get("lon")),
-                        category="Activity",
-                        source="nominatim"
-                    )
-            time.sleep(1)
+            # Try original query, then stripped query
+            stripped_q = re.sub(r'\b(campus|college|building|branch|near|in|at)\b', '', query, flags=re.IGNORECASE).strip()
+            queries_to_try = [f"{query}, {q_city}"]
+            if stripped_q and stripped_q != query:
+                queries_to_try.append(f"{stripped_q}, {q_city}")
+            queries_to_try.append(f"{query}, India")
+
+            for q_try in queries_to_try:
+                params = {"q": q_try, "format": "json", "limit": 3}
+                headers = {"User-Agent": "TravelAgentCapstone/1.0"}
+                resp = requests.get(url, params=params, headers=headers, timeout=5)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for place in data:
+                        plat = float(place.get("lat"))
+                        plon = float(place.get("lon"))
+                        import math
+                        dist = math.hypot(plat - base_lat, plon - base_lng) * 111.0 # approx km
+                        if dist <= 80: # Must be within 80km of destination
+                            return PlaceCandidate(
+                                id=str(place.get("place_id", place.get("osm_id", "mock-1"))),
+                                name=query,
+                                address=place.get("display_name"),
+                                latitude=plat,
+                                longitude=plon,
+                                category="Activity",
+                                source="nominatim"
+                            )
+                time.sleep(0.2)
         except Exception as e:
             logger.error(f"Geocoding failed for {query}: {e}")
         return None

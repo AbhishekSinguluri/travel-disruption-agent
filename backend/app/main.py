@@ -10,7 +10,7 @@ from app.api.imports import router as imports_router
 
 from app.services.booking_monitor import get_monitor_service
 
-app = FastAPI(title="Travel Disruption Recovery Agent")
+app = FastAPI(title="ROAM — Local Experience & Disruption AI Automator")
 
 @app.on_event("startup")
 async def startup_event():
@@ -43,10 +43,12 @@ from app.api.bookings import router as bookings_router
 from app.api.gmail import router as gmail_router
 from app.api.alerts import router as alerts_router
 from app.api.monitor_test import router as monitor_test_router
+from app.api.events import router as events_router
 app.include_router(bookings_router, prefix="/api/bookings", tags=["bookings"])
 app.include_router(gmail_router, prefix="/api/gmail", tags=["gmail"])
 app.include_router(alerts_router, prefix="/api/alerts", tags=["alerts"])
 app.include_router(monitor_test_router, prefix="/api/monitor", tags=["monitor_test"])
+app.include_router(events_router, prefix="/api/events", tags=["events"])
 
 
 

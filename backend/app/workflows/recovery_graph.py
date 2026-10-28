@@ -6,6 +6,7 @@ from app.agents.state import TripState
 from app.db.repositories import get_trip_repository
 from app.services.llm import classify_disruption_text, parse_user_preferences, determine_recovery_strategy
 from app.services.candidate_search import search_recovery_candidates
+from app.services.mock_db import MOCK_DB
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -14,13 +15,13 @@ def detect_disruption(state: TripState) -> TripState:
     print("[AGENT] DETECT_DISRUPTION")
     trip_id = state.get("trip_id")
     repo = get_trip_repository()
-    trip = repo.get_trip(trip_id, 'demo-user')
+    trip = repo.get_trip(trip_id, 'demo-user') or MOCK_DB.get("trips", {}).get(trip_id)
     return {"trip_data": trip}
 
 def classify_disruption(state: TripState) -> TripState:
     print("[AGENT] CLASSIFY_DISRUPTION")
     d_in = state.get("disruption_input", {})
-    trip = state.get("trip_data", {})
+    trip = state.get("trip_data") or MOCK_DB.get("trips", {}).get(state.get("trip_id")) or {}
     classification = classify_disruption_text(json.dumps(d_in), json.dumps(trip.get("days", [])))
     cls_dump = classification.model_dump()
     if d_in.get("affected_stop_id"):
@@ -50,20 +51,51 @@ def search_alternatives(state: TripState) -> TripState:
     if prefs_raw:
         structured_prefs = parse_user_preferences(json.dumps(prefs_raw))
         
-        trip = state.get("trip_data")
+        trip = state.get("trip_data") or {}
+        if not trip and state.get("trip_id"):
+            repo = get_trip_repository()
+            trip = repo.get_trip(state["trip_id"], "demo-user") or {}
+            
         affected_stop_id = state.get("active_disruption", {}).get("affected_stop_id")
+        if not affected_stop_id and isinstance(prefs_raw, dict):
+            affected_stop_id = prefs_raw.get("affected_stop_id")
+            
+        destination = trip.get("destination") or trip.get("name") or "Hyderabad"
+        current_stop_name = ""
+        lat, lng = None, None
+        excluded_places = []
         
-        lat, lng = 17.36, 78.47
-        if trip and affected_stop_id:
-            for day in trip.get("days", []):
-                for stop in day.get("stops", []):
-                    if stop.get("id") == affected_stop_id:
-                        if stop.get("latitude") and stop.get("longitude"):
-                            lat, lng = stop["latitude"], stop["longitude"]
-                            
-        # Use provider architecture
-        disruption_type = state.get("active_disruption", {}).get("type", "NORMAL_DELAY")
-        candidates = search_recovery_candidates(lat, lng, structured_prefs.model_dump(), disruption_type)
+        for day in trip.get("days", []):
+            for stop in day.get("stops", []):
+                if stop.get("title"):
+                    excluded_places.append(stop["title"])
+                if stop.get("location_name") and stop.get("location_name") not in excluded_places:
+                    excluded_places.append(stop["location_name"])
+                if stop.get("id") == affected_stop_id:
+                    current_stop_name = stop.get("title") or stop.get("location_name") or ""
+                    if stop.get("latitude") and stop.get("longitude"):
+                        lat, lng = stop["latitude"], stop["longitude"]
+                        
+        if lat is None or lng is None:
+            from app.agents.builder import get_destination_coords
+            lat, lng = get_destination_coords(destination)
+            
+        disruption_type = state.get("active_disruption", {}).get("type")
+        if not disruption_type and isinstance(prefs_raw, dict):
+            disruption_type = prefs_raw.get("disruption_type", "NORMAL_DELAY")
+        if not disruption_type:
+            disruption_type = "NORMAL_DELAY"
+            
+        prefs_dict = structured_prefs.model_dump() if hasattr(structured_prefs, "model_dump") else (structured_prefs if isinstance(structured_prefs, dict) else {})
+        candidates = search_recovery_candidates(
+            lat=lat, 
+            lng=lng, 
+            prefs=prefs_dict, 
+            disruption_type=disruption_type,
+            destination=destination,
+            current_stop_name=current_stop_name,
+            excluded_places=excluded_places
+        )
     return {"candidate_alternatives": candidates}
 
 def validate_alternatives(state: TripState) -> TripState:

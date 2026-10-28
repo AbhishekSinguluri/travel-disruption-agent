@@ -10,9 +10,9 @@ logger = logging.getLogger(__name__)
 
 # Initialize Groq client conditionally
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-raw_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-# Auto-fix deprecated models like llama-3.1-8b-instant
-GROQ_MODEL = "llama-3.3-70b-versatile" if "llama-3.1" in raw_model else raw_model
+raw_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+# Auto-fix deprecated models like llama-3.1 or llama-3.3
+GROQ_MODEL = "openai/gpt-oss-120b" if "llama" in raw_model.lower() else raw_model
 
 try:
     if GROQ_API_KEY:

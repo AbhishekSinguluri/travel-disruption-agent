@@ -32,6 +32,9 @@ class CanonicalBooking(BaseModel):
     extracted_at: Optional[datetime] = None
     raw_source_reference: Optional[str] = None
     baggage: Optional[Baggage] = None
+    email_date: Optional[str] = None
+    email_time: Optional[str] = None
+    sender_email: Optional[str] = None
 
 class GmailReadIntent(BaseModel):
     intent: str
@@ -61,6 +64,9 @@ class BookingSchema(BaseModel):
     domestic_international: Optional[str] = None
     baggage: Optional[Baggage] = None
     raw_extraction_metadata: Optional[Dict[str, Any]] = None
+    email_date: Optional[str] = None
+    email_time: Optional[str] = None
+    sender_email: Optional[str] = None
 
 class BookingEvent(BaseModel):
     id: Optional[str] = None

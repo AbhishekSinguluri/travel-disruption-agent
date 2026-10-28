@@ -32,29 +32,78 @@ const dotIcon = L.divIcon({
     iconAnchor: [8, 8]
 });
 
-function MapBounds({ stops, candidates, currentLocation }) {
+function MapBounds({ stops, candidates, currentLocation, mapInstanceRef }) {
     const map = useMap();
+    const hasInitialFitRef = React.useRef(false);
+    const userInteractedRef = React.useRef(false);
+    const lastStopsKeyRef = React.useRef('');
+
+    useEffect(() => {
+        if (mapInstanceRef) {
+            mapInstanceRef.current = map;
+        }
+        const handleUserInteraction = () => {
+            userInteractedRef.current = true;
+        };
+        map.on('zoomstart', handleUserInteraction);
+        map.on('dragstart', handleUserInteraction);
+        return () => {
+            map.off('zoomstart', handleUserInteraction);
+            map.off('dragstart', handleUserInteraction);
+        };
+    }, [map, mapInstanceRef]);
+
+    const stopsKey = (stops || []).map(s => `${s.id}:${s.latitude?.toFixed(4)}:${s.longitude?.toFixed(4)}`).join('|');
+
     useEffect(() => {
         const bounds = L.latLngBounds();
         let hasPoints = false;
-        if (stops && stops.length > 0) {
-            stops.forEach(s => { bounds.extend([s.latitude, s.longitude]); hasPoints = true; });
+
+        const validStops = (stops || []).filter(s => s.latitude != null && s.longitude != null && s.status !== 'SKIPPED');
+        
+        // Calculate cluster center to exclude extreme distance outliers (>100km)
+        let centerLat = 0, centerLng = 0;
+        if (validStops.length > 0) {
+            centerLat = validStops.reduce((sum, s) => sum + s.latitude, 0) / validStops.length;
+            centerLng = validStops.reduce((sum, s) => sum + s.longitude, 0) / validStops.length;
         }
+
+        validStops.forEach(s => {
+            const dist = Math.hypot(s.latitude - centerLat, s.longitude - centerLng);
+            if (dist < 1.0 || validStops.length <= 2) {
+                bounds.extend([s.latitude, s.longitude]);
+                hasPoints = true;
+            }
+        });
+
         if (candidates && candidates.length > 0) {
-            candidates.forEach(c => { bounds.extend([c.latitude, c.longitude]); hasPoints = true; });
+            candidates.forEach(c => {
+                if (c.latitude != null && c.longitude != null) {
+                    bounds.extend([c.latitude, c.longitude]);
+                    hasPoints = true;
+                }
+            });
         }
-        if (currentLocation) {
-            bounds.extend([currentLocation.lat, currentLocation.lng]);
-            hasPoints = true;
+
+        const isNewTrip = lastStopsKeyRef.current !== stopsKey;
+        if (isNewTrip) {
+            lastStopsKeyRef.current = stopsKey;
+            userInteractedRef.current = false;
+            hasInitialFitRef.current = false;
         }
-        if (hasPoints) {
-            map.fitBounds(bounds, { padding: [50, 50], maxZoom: 15 });
+
+        // Only auto-fit bounds on initial load of trip or if user hasn't zoomed manually
+        if (hasPoints && (!hasInitialFitRef.current || (!userInteractedRef.current && isNewTrip))) {
+            map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+            hasInitialFitRef.current = true;
         }
-    }, [map, stops, candidates, currentLocation]);
+    }, [map, stops, candidates, stopsKey]);
+
     return null;
 }
 
 export default function MapComponent({ stops = [], affectedStopId, candidates = [], selectedCandidateId, currentLocation, activeStopId, onStopClick }) {
+  const mapRef = React.useRef(null);
   const validStops = stops.filter(s => s.latitude != null && s.longitude != null && s.status !== 'SKIPPED');
   if (validStops.length === 0 && candidates.length === 0 && !currentLocation) {
     return (
@@ -66,9 +115,21 @@ export default function MapComponent({ stops = [], affectedStopId, candidates = 
   const center = validStops.length > 0 ? [validStops[0].latitude, validStops[0].longitude] : (candidates.length > 0 ? [candidates[0].latitude, candidates[0].longitude] : [currentLocation.lat, currentLocation.lng]);
   const routePositions = validStops.map(s => [s.latitude, s.longitude]);
 
+  const handleRecenter = () => {
+    if (!mapRef.current) return;
+    const bounds = L.latLngBounds();
+    validStops.forEach(s => bounds.extend([s.latitude, s.longitude]));
+    if (candidates && candidates.length > 0) {
+      candidates.forEach(c => bounds.extend([c.latitude, c.longitude]));
+    }
+    if (bounds.isValid()) {
+      mapRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    }
+  };
+
   return (
-    <div className="w-full h-full rounded-[2rem] overflow-hidden relative shadow-sm border border-slate-100 z-0">
-      <MapContainer center={center} zoom={13} style={{ width: '100%', height: '100%' }} zoomControl={false}>
+    <div className="w-full h-full rounded-[2rem] overflow-hidden relative shadow-sm border border-slate-100 z-0 group">
+      <MapContainer center={center} zoom={13} style={{ width: '100%', height: '100%' }} zoomControl={true}>
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -82,16 +143,37 @@ export default function MapComponent({ stops = [], affectedStopId, candidates = 
         {validStops.map((stop, index) => {
             const num = index + 1;
             const icon = stop.id === affectedStopId ? createCustomIcon('#ef4444', num) : (stop.id === activeStopId ? createCustomIcon('#22c55e', num) : createCustomIcon('#3b82f6', num));
-            const googleUrl = stop.place_id 
-                ? `https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}&destination_place_id=${stop.place_id}`
-                : `https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}`;
+            const googleNavUrl = `https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}`;
+            const googleSearchUrl = `https://www.google.com/maps/search/?api=1&query=${stop.latitude},${stop.longitude}`;
             
             return (
                 <Marker key={stop.id} position={[stop.latitude, stop.longitude]} icon={icon} eventHandlers={{ click: () => onStopClick && onStopClick(stop.id) }}>
                     <Popup>
-                        <strong>{stop.title}</strong><br/>
-                        {stop.start_time} - {stop.end_time}<br/>
-                        <a href={googleUrl} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-block', marginTop: '5px', padding: '2px 8px', backgroundColor: '#3b82f6', color: 'white', borderRadius: '4px', textDecoration: 'none', fontWeight: 'bold' }}>START</a>
+                        <div className="p-0.5">
+                            <strong className="text-sm font-serif block text-slate-900">{stop.title}</strong>
+                            {stop.address && <p className="text-[11px] text-slate-500 my-1 leading-tight">{stop.address}</p>}
+                            <span className="text-xs text-slate-600 block mb-2">{stop.start_time} - {stop.end_time}</span>
+                            <div className="flex items-center gap-2">
+                                <a 
+                                    href={googleNavUrl} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer" 
+                                    style={{ display: 'inline-block', padding: '4px 10px', backgroundColor: '#2563eb', color: 'white', borderRadius: '6px', textDecoration: 'none', fontWeight: 'bold', fontSize: '11px' }}
+                                    title="Start turn-by-turn navigation to exact GPS coordinates"
+                                >
+                                    NAVIGATE &rarr;
+                                </a>
+                                <a 
+                                    href={googleSearchUrl} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer" 
+                                    style={{ display: 'inline-block', padding: '4px 8px', backgroundColor: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', borderRadius: '6px', textDecoration: 'none', fontWeight: '500', fontSize: '11px' }}
+                                    title="Open exact location on Google Maps"
+                                >
+                                    Google Maps ↗
+                                </a>
+                            </div>
+                        </div>
                     </Popup>
                 </Marker>
             );
@@ -112,13 +194,27 @@ export default function MapComponent({ stops = [], affectedStopId, candidates = 
             </Marker>
         )}
 
-        <MapBounds stops={validStops} candidates={candidates} currentLocation={currentLocation} />
+        <MapBounds stops={validStops} candidates={candidates} currentLocation={currentLocation} mapInstanceRef={mapRef} />
       </MapContainer>
+
+      {/* Recenter Button */}
+      <button 
+        type="button" 
+        onClick={handleRecenter}
+        className="absolute bottom-4 right-4 z-[400] bg-white/90 hover:bg-white text-slate-800 text-[11px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-full shadow-md border border-slate-200 transition-all flex items-center gap-1.5 backdrop-blur-sm cursor-pointer"
+        title="Fit whole route into view"
+      >
+        <svg className="w-3.5 h-3.5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+        Recenter
+      </button>
 
       <style dangerouslySetInnerHTML={{__html: `
         .map-tiles { filter: grayscale(20%) contrast(1.1) opacity(0.9); }
         .leaflet-container { background: #f8fafc; font-family: inherit; }
         .leaflet-popup-content-wrapper { border-radius: 12px; box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1); }
+        .leaflet-top.leaflet-left { top: 12px; left: 12px; }
+        .leaflet-control-zoom { border: none !important; box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important; border-radius: 8px !important; overflow: hidden; }
+        .leaflet-control-zoom a { background-color: rgba(255,255,255,0.95) !important; color: #1e293b !important; }
       `}} />
     </div>
   );

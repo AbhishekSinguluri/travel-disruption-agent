@@ -57,9 +57,11 @@ Destination: {baseline.get('destination') or baseline.get('arrival_location')}
 New Email:
 {new_email_content}
 """
+        raw_model = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        model = "openai/gpt-oss-120b" if ("llama" in raw_model.lower()) else raw_model
         try:
             return client.chat.completions.create(
-                model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+                model=model,
                 response_model=ChangeDetectionResult,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,

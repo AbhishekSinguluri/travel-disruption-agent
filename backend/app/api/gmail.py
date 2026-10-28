@@ -45,13 +45,16 @@ async def connect_gmail(user: User = Depends(get_current_user)):
         
     state = secrets.token_urlsafe(32)
     
-    authorization_url, state = flow.authorization_url(
-        access_type='offline',
-        include_granted_scopes='true',
-        state=state,
-        prompt='consent',
-        login_hint=user.email
-    )
+    auth_kwargs = {
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "state": state,
+        "prompt": "consent",
+    }
+    if user.email and not getattr(user, "is_demo", False) and "example.com" not in user.email:
+        auth_kwargs["login_hint"] = user.email
+
+    authorization_url, state = flow.authorization_url(**auth_kwargs)
     
     oauth_states[state] = {
         "user_id": user.id,

@@ -161,27 +161,10 @@ def get_trip_repository() -> TripRepository:
 
 class BookingRepository:
     def __init__(self):
-        self.bookings = {}
-        self.alerts = []
-        
-    def save_booking(self, booking_id: str, data: dict):
-        self.bookings[booking_id] = data
-        
-    def get_booking(self, booking_id: str):
-        return self.bookings.get(booking_id)
-        
-    def create_alert(self, alert: dict):
-        self.alerts.append(alert)
-        
-    def get_alerts(self):
-        return self.alerts
-
-booking_repo = BookingRepository()
-def get_booking_repository(): return booking_repo
-
-
-class BookingRepository:
-    def __init__(self):
+        import os
+        import sqlite3
+        self.db_path = os.path.join(os.path.dirname(__file__), "..", "..", "trips.db")
+        self._init_db()
         if "bookings" not in MOCK_DB:
             MOCK_DB["bookings"] = {}
         if "alerts" not in MOCK_DB:
@@ -189,41 +172,235 @@ class BookingRepository:
         if "monitoring" not in MOCK_DB:
             MOCK_DB["monitoring"] = {}
             
-    def save_booking(self, booking: dict):
-        MOCK_DB["bookings"][booking["id"]] = booking
+    def _get_conn(self):
+        import sqlite3
+        return sqlite3.connect(self.db_path, timeout=10)
         
-    def list_bookings(self, user_id: str):
-        return [b for b in MOCK_DB["bookings"].values() if b.get("user_id") == user_id or user_id == "demo-user"]
+    def _init_db(self):
+        with self._get_conn() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bookings (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    booking_data TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS monitors (
+                    monitor_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    booking_id TEXT,
+                    monitor_data TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    booking_id TEXT,
+                    alert_data TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+
+    def save_booking(self, booking: dict) -> dict:
+        import uuid
+        import json
+        b = dict(booking)
+        user_id = b.get("user_id") or "demo-user"
+        b["user_id"] = user_id
+        
+        # Duplicate detection using explicit booking reference and provider
+        existing_id = None
+        ref = b.get("booking_reference")
+        prov = b.get("provider")
+        
+        if ref and ref != "N/A" and prov:
+            with self._get_conn() as conn:
+                cur = conn.execute("SELECT id, booking_data FROM bookings WHERE user_id = ?", (user_id,))
+                for row in cur.fetchall():
+                    try:
+                        data = json.loads(row[1])
+                        d_ref = data.get("booking_reference")
+                        d_prov = data.get("provider")
+                        if d_ref and d_ref != "N/A" and ref.strip().lower() == d_ref.strip().lower() and prov.strip().lower() == (d_prov or "").strip().lower():
+                            existing_id = row[0]
+                            break
+                    except Exception:
+                        pass
+
+        booking_id = existing_id or b.get("id") or str(uuid.uuid4())
+        b["id"] = booking_id
+
+        with self._get_conn() as conn:
+            conn.execute("INSERT OR REPLACE INTO bookings (id, user_id, booking_data) VALUES (?, ?, ?)",
+                         (booking_id, user_id, json.dumps(b)))
+            conn.commit()
+            
+        MOCK_DB["bookings"][booking_id] = b
+        return b
+        
+    def get_booking(self, booking_id: str) -> Optional[dict]:
+        import json
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT booking_data FROM bookings WHERE id = ?", (booking_id,))
+            row = cur.fetchone()
+            if row:
+                return json.loads(row[0])
+        return MOCK_DB["bookings"].get(booking_id)
+        
+    def list_bookings(self, user_id: str = "demo-user") -> List[dict]:
+        import json
+        bookings = []
+        seen_ids = set()
+        with self._get_conn() as conn:
+            if user_id == "demo-user":
+                cur = conn.execute("SELECT id, booking_data FROM bookings ORDER BY created_at DESC")
+            else:
+                cur = conn.execute("SELECT id, booking_data FROM bookings WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+            for row in cur.fetchall():
+                try:
+                    data = json.loads(row[1])
+                    b_id = row[0]
+                    seen_ids.add(b_id)
+                    
+                    # Attach monitor status if exists
+                    m_cur = conn.execute("SELECT monitor_data FROM monitors WHERE booking_id = ? OR monitor_id = ?", (b_id, b_id))
+                    m_row = m_cur.fetchone()
+                    if m_row:
+                        m_data = json.loads(m_row[0])
+                        data["monitoring_active"] = (m_data.get("status") == "ACTIVE")
+                        data["monitor_id"] = m_data.get("monitor_id")
+                        data["monitor_status"] = m_data.get("status", "ACTIVE")
+                        data["last_checked_at"] = m_data.get("last_checked_at")
+                    else:
+                        m_in_memory = MOCK_DB.get("monitoring", {}).get(b_id)
+                        if m_in_memory:
+                            data["monitoring_active"] = (m_in_memory.get("status") == "ACTIVE")
+                            data["monitor_id"] = b_id
+                            data["monitor_status"] = m_in_memory.get("status", "ACTIVE")
+                            data["last_checked_at"] = m_in_memory.get("last_checked")
+                            
+                    bookings.append(data)
+                except Exception:
+                    pass
+
+        # Include any in-memory bookings from MOCK_DB not yet seen
+        for b_id, b in MOCK_DB.get("bookings", {}).items():
+            if b_id not in seen_ids and (b.get("user_id") == user_id or user_id == "demo-user"):
+                bookings.append(b)
+                
+        return bookings
+
+    def delete_booking(self, booking_id: str, user_id: str = "demo-user") -> bool:
+        with self._get_conn() as conn:
+            if user_id == "demo-user":
+                conn.execute("DELETE FROM bookings WHERE id = ?", (booking_id,))
+            else:
+                conn.execute("DELETE FROM bookings WHERE id = ? AND user_id = ?", (booking_id, user_id))
+            conn.execute("DELETE FROM monitors WHERE booking_id = ? OR monitor_id = ?", (booking_id, booking_id))
+            conn.execute("DELETE FROM alerts WHERE booking_id = ?", (booking_id,))
+            conn.commit()
+
+        if booking_id in MOCK_DB.get("bookings", {}):
+            del MOCK_DB["bookings"][booking_id]
+        if booking_id in MOCK_DB.get("monitoring", {}):
+            del MOCK_DB["monitoring"][booking_id]
+        if "alerts" in MOCK_DB:
+            MOCK_DB["alerts"] = [a for a in MOCK_DB["alerts"] if a.get("booking_id") != booking_id]
+        return True
+        
+    def save_monitor(self, monitor_id: str, monitor_data: dict):
+        import json
+        booking_id = monitor_data.get("booking_id") or monitor_id
+        user_id = monitor_data.get("user_id") or "demo-user"
+        with self._get_conn() as conn:
+            conn.execute("INSERT OR REPLACE INTO monitors (monitor_id, user_id, booking_id, monitor_data) VALUES (?, ?, ?, ?)",
+                         (monitor_id, user_id, booking_id, json.dumps(monitor_data)))
+            # Update booking status if booking exists
+            b_cur = conn.execute("SELECT booking_data FROM bookings WHERE id = ?", (booking_id,))
+            b_row = b_cur.fetchone()
+            if b_row:
+                b_dict = json.loads(b_row[0])
+                b_dict["monitoring_active"] = True
+                b_dict["monitor_id"] = monitor_id
+                b_dict["status"] = monitor_data.get("status", "ACTIVE")
+                conn.execute("UPDATE bookings SET booking_data = ? WHERE id = ?", (json.dumps(b_dict), booking_id))
+            conn.commit()
+            
+        MOCK_DB["monitoring"][monitor_id] = monitor_data
+        
+    def get_monitor(self, monitor_id: str) -> Optional[dict]:
+        import json
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT monitor_data FROM monitors WHERE monitor_id = ? OR booking_id = ?", (monitor_id, monitor_id))
+            row = cur.fetchone()
+            if row:
+                return json.loads(row[0])
+        return MOCK_DB["monitoring"].get(monitor_id)
         
     def start_monitoring(self, booking_id: str):
         import datetime
-        MOCK_DB["monitoring"][booking_id] = {
+        monitor_state = {
+            "monitor_id": booking_id,
+            "booking_id": booking_id,
             "status": "ACTIVE",
             "last_checked": datetime.datetime.now().isoformat(),
             "next_check": (datetime.datetime.now() + datetime.timedelta(minutes=5)).isoformat()
         }
+        self.save_monitor(booking_id, monitor_state)
         
-    def save_monitor(self, monitor_id: str, monitor_data: dict):
-        MOCK_DB["monitoring"][monitor_id] = monitor_data
+    def create_alert(self, alert: dict):
+        import json
+        import uuid
+        alert_id = alert.get("id") or str(uuid.uuid4())
+        booking_id = alert.get("booking_id") or alert.get("monitor_id") or ""
+        user_id = alert.get("user_id") or "demo-user"
+        with self._get_conn() as conn:
+            conn.execute("INSERT OR REPLACE INTO alerts (id, user_id, booking_id, alert_data) VALUES (?, ?, ?, ?)",
+                         (alert_id, user_id, booking_id, json.dumps(alert)))
+            conn.commit()
+        if "alerts" not in MOCK_DB:
+            MOCK_DB["alerts"] = []
+        MOCK_DB["alerts"].append(alert)
         
-    def get_monitor(self, monitor_id: str):
-        return MOCK_DB["monitoring"].get(monitor_id)
-        
-    def get_alerts(self, user_id: str):
-        # Return mock alert if requested
-        if len(MOCK_DB["alerts"]) == 0:
+    def get_alerts(self, user_id: str = "demo-user") -> List[dict]:
+        import json
+        alerts = []
+        with self._get_conn() as conn:
+            if user_id == "demo-user":
+                cur = conn.execute("SELECT alert_data FROM alerts ORDER BY created_at DESC")
+            else:
+                cur = conn.execute("SELECT alert_data FROM alerts WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+            for row in cur.fetchall():
+                try:
+                    alerts.append(json.loads(row[0]))
+                except Exception:
+                    pass
+        if len(alerts) == 0 and len(MOCK_DB.get("alerts", [])) == 0:
             import uuid, datetime
-            MOCK_DB["alerts"].append({
+            mock_alert = {
                 "id": str(uuid.uuid4()),
-                "user_id": "demo-user",
+                "user_id": user_id,
                 "booking_id": "mock-booking",
                 "title": "FLIGHT DELAY",
                 "message": "Air India AI 123 from Hyderabad to Delhi delayed. Original: 09:20. New: 11:10.",
                 "severity": "HIGH",
                 "read": False,
                 "created_at": datetime.datetime.now().isoformat()
-            })
-        return MOCK_DB["alerts"]
+            }
+            alerts.append(mock_alert)
+            MOCK_DB["alerts"].append(mock_alert)
+        elif len(alerts) == 0:
+            return MOCK_DB["alerts"]
+        return alerts
 
-def get_booking_repository():
-    return BookingRepository()
+_booking_repo_instance = None
+def get_booking_repository() -> BookingRepository:
+    global _booking_repo_instance
+    if _booking_repo_instance is None:
+        _booking_repo_instance = BookingRepository()
+    return _booking_repo_instance
